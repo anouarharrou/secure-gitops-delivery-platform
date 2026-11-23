@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: delivery-demo
+resources:
+  - namespace.yaml
+  - analysis-template.yaml
+  - services.yaml
+  - rollout.yaml
+  - load-generator.yaml
+images:
+  - name: demo-app
+    newName: kind-registry:5000/delivery-demo
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

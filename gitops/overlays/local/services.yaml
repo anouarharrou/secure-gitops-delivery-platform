@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: delivery-demo-stable
+  labels:
+    app: delivery-demo
+spec:
+  type: ClusterIP
+  selector:
+    app: delivery-demo
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: delivery-demo-canary
+  labels:
+    app: delivery-demo
+spec:
+  type: ClusterIP
+  selector:
+    app: delivery-demo
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: delivery-demo
+  labels:
+    release: monitoring
+    app: delivery-demo
+spec:
+  namespaceSelector:
+    matchNames:
+      - delivery-demo
+  selector:
+    matchLabels:
+      app: delivery-demo
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 5s

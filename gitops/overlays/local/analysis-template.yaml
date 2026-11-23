@@ -1,0 +1,16 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: delivery-demo-error-rate
+spec:
+  metrics:
+    - name: http-5xx-count
+      interval: 30s
+      count: 4
+      failureLimit: 1
+      successCondition: result[0] < 1
+      failureCondition: result[0] >= 1
+      provider:
+        prometheus:
+          address: http://monitoring-kube-prometheus-prometheus.monitoring.svc:9090
+          query: sum(increase(app_http_requests_total{status="503"}[2m])) or vector(0)

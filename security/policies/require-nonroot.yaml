@@ -1,0 +1,36 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-restricted-delivery-demo-pods
+  annotations:
+    policies.kyverno.io/title: Require restricted containers in delivery-demo
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/subject: Pod
+spec:
+  background: true
+  validationFailureAction: Enforce
+  rules:
+    - name: require-non-root-and-restricted-container
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - delivery-demo
+      validate:
+        message: "Pods in delivery-demo must run as non-root with seccomp RuntimeDefault, no privilege escalation, a read-only root filesystem, and all Linux capabilities dropped."
+        pattern:
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - securityContext:
+                  runAsNonRoot: true
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop:
+                      - ALL

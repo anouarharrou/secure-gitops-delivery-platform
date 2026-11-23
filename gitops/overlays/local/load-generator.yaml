@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: delivery-demo-load-generator
+  labels:
+    app: delivery-demo-load-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: delivery-demo-load-generator
+  template:
+    metadata:
+      labels:
+        app: delivery-demo-load-generator
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: load-generator
+          image: demo-app:bootstrap
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -c
+            - |
+              import time
+              import urllib.error
+              import urllib.request
+              url = "http://delivery-demo-canary:8080/"
+              while True:
+                  try:
+                      urllib.request.urlopen(url, timeout=2).read()
+                  except Exception:
+                      pass
+                  time.sleep(1)
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL

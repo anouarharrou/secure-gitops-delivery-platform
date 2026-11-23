@@ -1,0 +1,177 @@
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '15', artifactNumToKeepStr: '10'))
+    skipDefaultCheckout(true)
+  }
+
+  // Jenkins runs on the Fedora host. Polling avoids exposing a laptop-bound
+  // Jenkins endpoint to the public internet for GitHub webhooks.
+  triggers {
+    pollSCM('H/2 * * * *')
+  }
+
+  environment {
+    BUILD_TOOL_ADDR = 'tcp://buildkitd:1234'
+    IMAGE_REPOSITORY = 'kind-registry:5000/delivery-demo'
+    TARGET_BRANCH = 'main'
+    TRIVY_CACHE_DIR = '/var/jenkins_home/.cache/trivy'
+    COSIGN_INSECURE_REGISTRY = 'true'
+  }
+
+  stages {
+    stage('Checkout GitHub source') {
+      steps {
+        checkout scm
+        script {
+          env.SOURCE_COMMIT = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+          env.SOURCE_COMMIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
+          env.FAIL_REQUESTS = fileExists('application/fault-injection.enabled') ? 'true' : 'false'
+
+          def previous = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
+          if (!previous || previous == env.SOURCE_COMMIT ||
+              sh(returnStatus: true, script: "git cat-file -e ${previous}^{commit}") != 0) {
+            env.BUILD_REQUIRED = 'true'
+          } else {
+            def changed = sh(returnStdout: true,
+              script: "git diff --name-only ${previous} ${env.SOURCE_COMMIT}").trim()
+            def paths = changed ? changed.split('\n') as List : []
+            env.BUILD_REQUIRED = paths.any { p ->
+              p.startsWith('application/') || p.startsWith('ci/')
+            } ? 'true' : 'false'
+          }
+
+          currentBuild.description = "${env.SOURCE_COMMIT_SHORT} | build=${env.BUILD_REQUIRED} | fault=${env.FAIL_REQUESTS}"
+          echo "Commit=${env.SOURCE_COMMIT_SHORT}; buildRequired=${env.BUILD_REQUIRED}; faultInjection=${env.FAIL_REQUESTS}"
+        }
+      }
+    }
+
+    stage('Build OCI image with BuildKit') {
+      when { expression { env.BUILD_REQUIRED == 'true' } }
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p artifacts
+          buildctl --addr "$BUILD_TOOL_ADDR" build \\
+            --frontend dockerfile.v0 \\
+            --local context=application \\
+            --local dockerfile=application \\
+            --opt build-arg:FAIL_REQUESTS="$FAIL_REQUESTS" \\
+            --opt build-arg:APP_VERSION="$SOURCE_COMMIT_SHORT" \\
+            --output type=oci,dest=artifacts/delivery-demo.oci.tar
+          test -s artifacts/delivery-demo.oci.tar
+        '''
+      }
+    }
+
+    stage('Vulnerability scan and SBOM') {
+      when { expression { env.BUILD_REQUIRED == 'true' } }
+      steps {
+        sh '''#!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p artifacts
+          trivy image --input artifacts/delivery-demo.oci.tar \\
+            --format json --output artifacts/trivy-report.json \\
+            --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --exit-code 0
+
+          echo "Blocking gate: any CRITICAL finding fails this pipeline."
+          trivy image --input artifacts/delivery-demo.oci.tar \\
+            --severity CRITICAL --exit-code 1
+
+          syft oci-archive:artifacts/delivery-demo.oci.tar \\
+            -o cyclonedx-json=artifacts/sbom.cdx.json
+          test -s artifacts/sbom.cdx.json
+        '''
+      }
+    }
+
+    stage('Push, sign and attest image') {
+      when { expression { env.BUILD_REQUIRED == 'true' } }
+      steps {
+        withCredentials([
+          file(credentialsId: 'cosign-private-key', variable: 'COSIGN_KEY_FILE'),
+          string(credentialsId: 'cosign-password', variable: 'COSIGN_PASSWORD')
+        ]) {
+          script {
+            env.IMAGE_TAG = env.SOURCE_COMMIT_SHORT
+            env.IMAGE_REF = "${env.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
+            sh '''#!/usr/bin/env bash
+              set -euo pipefail
+              skopeo copy --dest-tls-verify=false \\
+                oci-archive:artifacts/delivery-demo.oci.tar \\
+                "docker://${IMAGE_REF}"
+
+              IMAGE_DIGEST="$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://${IMAGE_REF}")"
+              [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+              printf '%s\n' "$IMAGE_DIGEST" > artifacts/image-digest.txt
+
+              cosign sign --key "$COSIGN_KEY_FILE" --tlog-upload=false --yes \\
+                "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+
+              cosign attest --key "$COSIGN_KEY_FILE" --type cyclonedx \\
+                --predicate artifacts/sbom.cdx.json \\
+                --tlog-upload=false --yes \\
+                "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+            '''
+            env.IMAGE_DIGEST = readFile('artifacts/image-digest.txt').trim()
+            echo "Published ${env.IMAGE_REPOSITORY}@${env.IMAGE_DIGEST}"
+          }
+        }
+      }
+    }
+
+    stage('Update GitOps desired state') {
+      when { expression { env.BUILD_REQUIRED == 'true' } }
+      steps {
+        withCredentials([string(credentialsId: 'github-write-token', variable: 'GITHUB_TOKEN')]) {
+          sh '''#!/usr/bin/env bash
+            set -euo pipefail
+            python3 scripts/update-image-digest.py "$IMAGE_DIGEST"
+            git config user.name "delivery-platform-bot"
+            git config user.email "delivery-platform-bot@users.noreply.github.com"
+
+            if git diff --quiet -- gitops/overlays/local/kustomization.yaml; then
+              echo "GitOps digest did not change; no commit required."
+              exit 0
+            fi
+
+            git add gitops/overlays/local/kustomization.yaml
+            git commit -m "chore(gitops): deploy ${SOURCE_COMMIT_SHORT}"
+
+            ASKPASS="$(mktemp)"
+            trap 'rm -f "$ASKPASS"' EXIT
+            cat > "$ASKPASS" <<'ASKPASS_EOF'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s' 'x-access-token' ;;
+  *Password*) printf '%s' "$GITHUB_TOKEN" ;;
+  *) printf '\n' ;;
+esac
+ASKPASS_EOF
+            chmod 0700 "$ASKPASS"
+            GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 \\
+              git push origin "HEAD:${TARGET_BRANCH}"
+          '''
+        }
+      }
+    }
+
+    stage('Skip non-application commit') {
+      when { expression { env.BUILD_REQUIRED != 'true' } }
+      steps {
+        echo 'No application/ or ci/ changes detected. GitOps-only commits do not trigger another image build.'
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: 'artifacts/trivy-report.json,artifacts/sbom.cdx.json,artifacts/image-digest.txt', allowEmptyArchive: true, fingerprint: true
+      cleanWs deleteDirs: true, notFailBuild: true
+    }
+  }
+}

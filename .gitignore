@@ -1,0 +1,26 @@
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+security/cosign/cosign.key
+security/policies/verify-images.yaml
+*.pem
+*.key
+*.password
+
+# Local state and generated output
+artifacts/
+.cache/
+.tmp/
+*.oci.tar
+*.tar
+*.log
+.DS_Store
+.idea/
+.vscode/
+__pycache__/
+*.pyc
+
+# Local cluster files
+.kube/
+kind-kubeconfig
