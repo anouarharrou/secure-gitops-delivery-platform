@@ -194,7 +194,7 @@ pipeline {
             cat > "$ASKPASS" <<'ASKPASS_EOF'
 #!/bin/sh
 case "$1" in
-  *Username*) printf '%s' 'x-access-token' ;;
+  *Username*) printf '%s' "$GITHUB_USERNAME" ;;
   *Password*) printf '%s' "$GITHUB_TOKEN" ;;
   *) printf '\n' ;;
 esac
