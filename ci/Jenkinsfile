@@ -8,12 +8,6 @@ pipeline {
     skipDefaultCheckout(true)
   }
 
-  // Jenkins runs on the Fedora host. Polling avoids exposing a laptop-bound
-  // Jenkins endpoint to the public internet for GitHub webhooks.
-  triggers {
-    pollSCM('H/2 * * * *')
-  }
-
   environment {
     BUILD_TOOL_ADDR = 'tcp://buildkitd:1234'
     IMAGE_REPOSITORY = 'kind-registry:5000/delivery-demo'

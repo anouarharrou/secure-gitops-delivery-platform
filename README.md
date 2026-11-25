@@ -2,16 +2,20 @@
   <img src="docs/assets/architecture-overview.png" alt="Secure GitOps Delivery Platform architecture overview on a white background" width="100%" />
 
   # Secure GitOps Delivery Platform
-  **From Commit to Verified Production Deployment**
+  **From Commit to Verified Deployment**
 
-  A self-hosted, zero-cloud-cost DevSecOps and Platform Engineering lab built around GitHub, Jenkins, Kubernetes, GitOps, image-signing, admission control and progressive delivery.
+  A local-first, hands-on portfolio lab for exploring secure software delivery with Jenkins, Kubernetes, GitOps, image signing, admission control and progressive delivery.
 </div>
 
 ---
 
 ## Start here
 
-**Before running commands, read [`docs/requirements.md`](docs/requirements.md).** It documents the Fedora Linux baseline, host dependencies, versions, hardware sizing and network/cost expectations. This lab targets Fedora Workstation 44 x86_64.
+This repository is for developers and platform engineers who want to see how a container moves from a code change through security checks and into a verified Kubernetes rollout. You can explore the architecture and source without running it, or follow the setup guide to run the full lab locally.
+
+**To run the lab:** fork this repository to your GitHub account, then follow the README setup steps on a Fedora Workstation 44 x86_64 host. The lab runs Jenkins, the OCI registry, Kubernetes and observability locally; GitHub is used for source control and GitOps history. This is an educational and portfolio project, not a production deployment recipe.
+
+**Before installing tools, read [`docs/requirements.md`](docs/requirements.md).** It covers supported host versions, dependencies, hardware sizing and network access.
 
 - [Requirements — Fedora Linux](docs/requirements.md)
 - [Tooling Education Guide — what every tool does and why we use it](docs/tools-education-guide.md)
@@ -19,13 +23,13 @@
 - [Canary-failure incident runbook](docs/runbooks/incident-canary-failure.md)
 - [Test plan and acceptance criteria](docs/test-plan.md)
 
-> **GitHub replaces the self-hosted Git service.** GitHub is the remote SCM. Jenkins runs locally and polls GitHub; the pipeline does not use GitHub Actions or GitHub-hosted runners. No inbound webhook or public tunnel is needed.
+> **GitHub replaces the self-hosted Git service.** GitHub is the remote SCM. Jenkins runs locally; the pipeline does not use GitHub Actions or GitHub-hosted runners. Push webhooks are optional and require a reachable Jenkins endpoint; scheduled SCM polling works without one.
 
 > **Viewing the flow diagrams:** GitHub renders the Mermaid diagrams in Markdown natively, so no browser extension is needed when reading this README on GitHub. For a local Markdown preview in Cursor/VS Code, use Mermaid preview support in your editor. Search Extensions for **Markdown Preview Mermaid Support** (`bierner.markdown-mermaid`) if your editor does not render Mermaid blocks. In VS Code 1.121 and newer, Mermaid preview support is included in the built-in Markdown preview. Mermaid support is only for rendering the diagrams; it is not a lab runtime dependency.
 
 ## 1. What this project demonstrates
 
-This is intended to look and behave like a small internal software-delivery platform, not a collection of disconnected YAML examples.
+This repository models a small internal software-delivery platform as an end-to-end workflow.
 
 | Capability | Implementation | Evidence you can show |
 |---|---|---|
@@ -47,7 +51,7 @@ This is intended to look and behave like a small internal software-delivery plat
 ```mermaid
 flowchart TD
   A[Developer commits application change] --> B[GitHub repository]
-  B -->|Jenkins polls GitHub| C[Jenkins Pipeline on Fedora]
+  B -->|GitHub push webhook or scheduled SCM polling| C[Jenkins Pipeline on Fedora]
   C --> D[Rootless BuildKit exports OCI layout directory]
   D --> E[Trivy scans image]
   E --> F[Syft generates CycloneDX SBOM]
@@ -75,7 +79,7 @@ The white-background image at the top is a visual overview. The Mermaid diagram 
 | Component | Role | Host access |
 |---|---|---|
 | GitHub | Source repository and GitOps history | `github.com` |
-| Jenkins LTS | Local CI orchestrator; polls GitHub | `http://127.0.0.1:8080` |
+| Jenkins LTS | Local CI orchestrator; GitHub push webhook plus scheduled SCM polling fallback | `http://127.0.0.1:8080` |
 | BuildKit rootless | Builds OCI image without mounting the host Docker socket into Jenkins | Internal Compose network only |
 | OCI Registry | Stores built images and Cosign artifacts | `http://127.0.0.1:5000` |
 | Registry Dashboard | Read-only browser UI for the local registry | `http://127.0.0.1:8082` |
@@ -149,29 +153,25 @@ The required host tools are Docker Engine, Docker Compose, kubectl, Kind, Helm 3
 
 The Jenkins image contains Trivy, Syft, Cosign, BuildKit client and Skopeo. You do not need to install those tools separately on Fedora.
 
-## 6. Create the GitHub repository
+## 6. Fork and configure the GitHub repository
 
-1. Create an **empty public GitHub repository** named `secure-gitops-delivery-platform`. Do not initialize it with a README, license or `.gitignore`; this repository already contains those files.
-2. Extract this ZIP archive and enter the project directory.
-3. Configure the Argo CD repository URL, then create the Git repository and push the first commit.
+On GitHub, select **Fork** to create a copy under your account, then clone that fork. The Jenkins pipeline needs write access to your fork so it can commit the built image digest; using a fork also keeps your changes separate from the project owner's repository.
 
 ```bash
+git clone https://github.com/YOUR_GITHUB_USERNAME/secure-gitops-delivery-platform.git
 cd secure-gitops-delivery-platform
 
 ./scripts/configure-repository.sh \
   https://github.com/YOUR_GITHUB_USERNAME/secure-gitops-delivery-platform.git
 
-git init -b main
-git add .
-git commit -m "chore: bootstrap secure GitOps delivery platform"
-git remote add origin \
-  https://github.com/YOUR_GITHUB_USERNAME/secure-gitops-delivery-platform.git
-git push -u origin main
+git add gitops/root-application.yaml
+git commit -m "chore: configure my GitOps repository"
+git push origin main
 ```
 
-Replace `YOUR_GITHUB_USERNAME` with your GitHub username in both places. The configuration script updates `gitops/root-application.yaml`.
+Replace `YOUR_GITHUB_USERNAME` with the account that owns your fork. The configuration script points Argo CD at that fork in `gitops/root-application.yaml`.
 
-**Why public?** Argo CD can clone a public repository without extra repository credentials. The lab does not need to store a GitHub read token in Kubernetes. You can use a private repository later, but must configure Argo CD repository credentials separately.
+**Why public?** Argo CD can clone a public fork without storing a GitHub read token in Kubernetes. A private fork also works, but requires configuring Argo CD repository credentials separately.
 
 ## 7. Start the local CI services
 
@@ -194,7 +194,7 @@ docker compose exec jenkins \
   cat /var/jenkins_home/secrets/initialAdminPassword
 ```
 
-Open Jenkins, unlock it, and create the first administrator. The required plugins are already installed by `ci/Dockerfile`; you can skip installing additional suggested plugins for this POC.
+Open Jenkins, unlock it, and create the first administrator. The required plugins are already installed by `ci/Dockerfile`; you can skip installing additional suggested plugins for this lab.
 
 ### Secure Delivery OCI Registry Dashboard
 
@@ -261,7 +261,31 @@ In Jenkins:
 7. Script path: `ci/Jenkinsfile`.
 8. Save and click **Build Now** for the first run.
 
-The Jenkinsfile enables `pollSCM('H/2 * * * *')`, so Jenkins polls GitHub approximately every two minutes after the job's first run. No webhook is required and no inbound port is exposed.
+Configure both triggers in the Jenkins job UI. Trigger settings are deliberately not declared in `ci/Jenkinsfile`, so the job configuration remains the source of truth. The scheduled **Poll SCM** trigger checks every 15 minutes and starts a build only when it detects a repository change; it is not an unconditional scheduled build.
+
+#### Configure the Jenkins webhook trigger
+
+1. The `github` plugin is listed in `ci/plugins.txt`. From the repository root, rebuild and restart Jenkins to install it:
+
+   ```bash
+   docker compose up -d --build jenkins
+   ```
+
+2. In Jenkins, open the `secure-gitops-delivery` job and select **Configure → Build Triggers**.
+3. Check **GitHub hook trigger for GITScm polling**. This enables the job to respond to the GitHub plugin's webhook endpoint.
+4. Also check **Poll SCM** and enter `H/15 * * * *` in its schedule field. This is the fallback for missed/unavailable webhooks and polls every 15 minutes; it does not run a build when there are no source changes.
+5. Save the job configuration. The Jenkinsfile does not configure or override these triggers. Jenkins' GitHub plugin receives push notifications at `<Jenkins base URL>/github-webhook/` (for example, `https://jenkins.example.com/github-webhook/`). In manual webhook mode, Jenkins does not create the GitHub webhook for you; configure that URL on the GitHub repository as described below. See the plugin's [GitHub documentation](https://plugins.jenkins.io/github/) for details.
+
+#### Register the webhook in GitHub
+
+1. Open the repository on GitHub and go to **Settings → Webhooks → Add webhook**.
+2. Set **Payload URL** to the Jenkins URL ending in `/github-webhook/` and **Content type** to `application/json`.
+3. Select **Just the push event**, leave **Active** checked, and click **Add webhook**.
+4. Open the saved webhook and check **Recent Deliveries**. A successful delivery confirms GitHub could contact Jenkins; then push a commit to verify the Jenkins job starts.
+
+GitHub must be able to reach the Jenkins base URL. This lab binds Jenkins to loopback (`127.0.0.1:8080`), which GitHub cannot reach, so webhooks will not work with the default local-only setup. If Jenkins is only available on this machine, leave the Jenkins UI **Poll SCM** trigger enabled and use it as the working trigger. Do not expose the lab Jenkins port directly to the internet.
+
+The pipeline compares changed paths against the last successful build. Image build, scan, signing and GitOps update stages run only when `application/` or `ci/` files changed. A push that changes only GitOps output can still start a short pipeline run, which skips those stages. Rebuilding Jenkins retains its data volume.
 
 ### What the first build does
 
@@ -414,7 +438,7 @@ Expected results:
 - The unrestricted/root Pod is denied by the restricted-Pod policy.
 - The unsigned local image is denied by the Cosign signature-verification policy.
 
-If either test is admitted, stop and inspect the Kyverno policy status before calling the POC complete.
+If either test is admitted, stop and inspect the Kyverno policy status before considering the lab validated.
 
 ## 16. Demonstrate an unhealthy canary and automatic abort
 
@@ -486,12 +510,14 @@ IMAGE_REF="kind-registry:5000/delivery-demo@${IMAGE_DIGEST}"
 The local registry is HTTP, so pass Cosign's explicit lab-only HTTP option:
 
 ```bash
-cosign verify --allow-http-registry --key security/cosign/cosign.pub "$IMAGE_REF"
-cosign verify-attestation --allow-http-registry --key security/cosign/cosign.pub \
+cosign verify --allow-http-registry --insecure-ignore-tlog \
+  --key security/cosign/cosign.pub "$IMAGE_REF"
+cosign verify-attestation --allow-http-registry --insecure-ignore-tlog \
+  --key security/cosign/cosign.pub \
   --type cyclonedx "$IMAGE_REF"
 ```
 
-The signature proves which key signed the image digest. The signed CycloneDX attestation binds the generated SBOM to that digest. Kyverno's admission rule in this POC enforces the image signature; the attestation is generated and can be verified manually.
+The signature proves which key signed the image digest. The signed CycloneDX attestation binds the generated SBOM to that digest. Kyverno's admission rule in this lab enforces the image signature; the attestation is generated and can be verified manually.
 
 ## 18. Useful day-to-day commands
 
@@ -548,7 +574,7 @@ More incident guidance: [`docs/runbooks/incident-canary-failure.md`](docs/runboo
 
 ## 20. Security boundaries and limitations
 
-This is a local engineering POC, not a production-ready reference deployment.
+This is an educational local lab, not a production-ready reference deployment.
 
 - Jenkins runs a built-in executor for convenience. Production Jenkins should use isolated, ephemeral agents and least-privilege credentials.
 - The Jenkins controller has no host Docker socket mounted. It talks to a separate rootless BuildKit daemon.

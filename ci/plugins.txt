@@ -1,5 +1,7 @@
 git
 workflow-aggregator
+github
 credentials-binding
 pipeline-stage-view
 ws-cleanup
+timestamper

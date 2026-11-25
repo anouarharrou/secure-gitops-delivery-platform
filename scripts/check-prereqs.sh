@@ -2,7 +2,7 @@
 set -euo pipefail
 
 missing=0
-for bin in docker kubectl kind helm git curl python3 openssl jq; do
+for bin in docker kubectl kind helm git curl python3 openssl jq cosign; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     printf 'MISSING  %s\n' "$bin"
     missing=1

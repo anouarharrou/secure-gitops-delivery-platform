@@ -4,7 +4,7 @@
 
 This guide explains every major tool used by this lab, why it is present, where it fits in the delivery process, and how to inspect it while working through the project. Read it alongside the [Fedora requirements](requirements.md), [architecture and trust boundaries](architecture.md), and the [main README](../README.md).
 
-The goal is not to memorize product names. The goal is to understand the job each component performs, which component it talks to, and which responsibility it must **not** take over.
+Use this guide to understand each component's responsibility, the systems it connects to, and the boundaries that keep CI, deployment, admission and release control separate.
 
 ---
 
@@ -81,7 +81,7 @@ git push origin main
 
 **Why this lab uses it:** GitHub is the shared source of truth for application code and GitOps configuration. It replaces a self-hosted Git service. Keeping GitHub as SCM does **not** mean using GitHub Actions: all CI jobs still execute on the local Jenkins instance.
 
-**How it is used here:** Jenkins polls GitHub approximately every two minutes. Polling avoids exposing a laptop-hosted Jenkins endpoint to the public internet for inbound webhooks. A Jenkins credential named `github-write-token` is used only when the pipeline must push the GitOps digest commit. For a public repository, Argo CD can clone without repository credentials.
+**How it is used here:** Jenkins supports GitHub push webhooks and polls GitHub approximately every 15 minutes as a fallback. The webhook avoids waiting for the next poll when Jenkins is reachable from GitHub; loopback-only Jenkins uses polling. A Jenkins credential named `github-write-token` is used only when the pipeline must push the GitOps digest commit. For a public repository, Argo CD can clone without repository credentials.
 
 **Credential principle:** Use a fine-grained token with only the repository access and `Contents: Read and write` permission needed for the Jenkins push. Store it as a Jenkins credential, never in the repository, a YAML manifest, or the Jenkinsfile.
 
@@ -214,7 +214,7 @@ The lab also uses the Kustomize functionality built into modern `kubectl` (`kube
 4. Push the image, sign it, and attest its SBOM.
 5. Commit the immutable image digest to GitHub's GitOps overlay.
 
-Jenkins polls GitHub using `pollSCM('H/2 * * * *')`. The first build is started manually from the Jenkins UI. For this learning lab, Jenkins uses its built-in executor; production Jenkins deployments should normally use separately managed, isolated agents and stronger controller hardening.
+The Jenkins job's UI enables **GitHub hook trigger for GITScm polling** and a **Poll SCM** fallback on `H/15 * * * *`; trigger configuration is not declared in the Jenkinsfile. GitHub push webhooks must target the reachable Jenkins `/github-webhook/` endpoint. The pipeline runs its build, scan, signing and GitOps stages only for `application/` or `ci/` changes; GitOps-only pushes get a short skip run. The first build is started manually from the Jenkins UI. For this learning lab, Jenkins uses its built-in executor; production Jenkins deployments should normally use separately managed, isolated agents and stronger controller hardening.
 
 ### BuildKit
 
@@ -222,7 +222,7 @@ Jenkins polls GitHub using `pollSCM('H/2 * * * *')`. The first build is started 
 
 **Why this lab uses it:** The pipeline needs to build a container image without mounting the Fedora host's Docker socket into Jenkins. A separate rootless BuildKit daemon provides a cleaner separation than granting Jenkins direct access to the host Docker daemon.
 
-**How it is used here:** Compose runs the `moby/buildkit` rootless daemon. The custom Jenkins image contains the `buildctl` client. Jenkins sends a Dockerfile build request to `buildkitd` and exports the result as an OCI archive.
+**How it is used here:** Compose runs the `moby/buildkit` rootless daemon. The custom Jenkins image contains the `buildctl` client. Jenkins sends a Dockerfile build request to `buildkitd` and exports the result as an OCI layout directory (`type=oci,tar=false`) for Trivy, Syft and Skopeo to consume.
 
 Useful inspection commands:
 
@@ -258,9 +258,9 @@ The registry uses HTTP only for this isolated local lab. Never expose it to a LA
 
 **What it is:** Skopeo inspects and copies container images between image transports and registries without requiring a Docker daemon for the copy operation.
 
-**Why this lab uses it:** BuildKit exports an OCI archive. Skopeo copies that archive into the local registry and reads the registry's immutable digest. This keeps image transfer separate from building.
+**Why this lab uses it:** BuildKit exports an OCI layout directory. Skopeo copies that layout into the local registry and reads the registry's immutable digest. This keeps image transfer separate from building.
 
-**How it is used here:** The Jenkins pipeline uses `skopeo copy` to publish the OCI archive and `skopeo inspect` to obtain the digest that is later signed and written to GitOps.
+**How it is used here:** The Jenkins pipeline uses `skopeo copy` to publish the OCI layout directory with digest preservation and `skopeo inspect` to verify the published digest matches BuildKit's manifest digest before signing and writing it to GitOps.
 
 ---
 
@@ -288,7 +288,7 @@ Trivy results depend on the vulnerability database and package metadata availabl
 
 **Why this lab uses it:** Teams need to know which libraries and packages are inside an artifact, not merely that an image was built. An SBOM supports vulnerability triage, component tracking, and supply-chain transparency.
 
-**How it is used here:** Syft scans the OCI archive and writes a CycloneDX JSON SBOM to `artifacts/sbom.cdx.json`. The pipeline archives it and later attaches it to the image as a signed attestation.
+**How it is used here:** Syft scans BuildKit's OCI layout directory with the `oci-dir:` source and writes a CycloneDX JSON SBOM to `artifacts/sbom.cdx.json`. The pipeline archives it and later attaches it to the image as a signed attestation.
 
 ### Cosign
 
@@ -442,7 +442,7 @@ The metric is used in two ways: Prometheus gives humans a way to inspect service
 
 **Why it is included:** It is part of the monitoring stack and introduces the alert-routing component used in many production observability platforms.
 
-**Scope in this POC:** The key automated release decision is implemented by Argo Rollouts querying Prometheus. The lab's focus is not a fully configured external notification integration; Alertmanager is included as part of the monitoring stack and can be extended with receivers and alert rules.
+**Scope in this lab:** The key automated release decision is implemented by Argo Rollouts querying Prometheus. The lab does not include a configured external notification integration; Alertmanager is part of the monitoring stack and can be extended with receivers and alert rules.
 
 ---
 
@@ -489,7 +489,7 @@ Work through the tools in the order that the platform uses them:
 1. **Git and GitHub:** understand commits, pushes, branches, and why the GitOps commit matters.
 2. **Docker and Compose:** understand the local service network, volumes, and service boundaries.
 3. **Kind, Kubernetes, and kubectl:** inspect the three-node cluster and understand the Kubernetes API.
-4. **Jenkins and BuildKit:** follow one pipeline run from checkout to OCI archive.
+4. **Jenkins and BuildKit:** follow one pipeline run from checkout to an OCI layout directory.
 5. **Trivy, Syft, Skopeo, and Cosign:** inspect the scan report, SBOM, published digest, signature, and attestation.
 6. **Argo CD and Kustomize:** follow the digest commit from GitHub into the cluster.
 7. **Kyverno:** run the negative admission tests and read why each Pod is rejected.

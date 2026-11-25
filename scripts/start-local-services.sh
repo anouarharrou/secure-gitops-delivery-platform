@@ -11,11 +11,13 @@ if [[ ! -f .env ]]; then
 fi
 
 docker compose up -d --build
+DASHBOARD_ENDPOINT="$(docker compose port registry-ui 80)"
 
 echo
 echo "Local services are starting:"
 echo "  Jenkins:  http://127.0.0.1:8080"
 echo "  Registry: http://127.0.0.1:5000/v2/"
+echo "  Registry Dashboard: http://${DASHBOARD_ENDPOINT}/"
 echo
 echo "First Jenkins unlock password:"
 docker compose exec -T jenkins sh -c 'cat /var/jenkins_home/secrets/initialAdminPassword' 2>/dev/null || \

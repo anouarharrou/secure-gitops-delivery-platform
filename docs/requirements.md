@@ -1,8 +1,8 @@
 # Lab Requirements — Fedora Linux
 
-This POC targets **Fedora Workstation 44 x86_64** and uses Docker Engine as the container runtime for both Docker Compose and Kind. The commands are intended for a fresh Fedora workstation; skip packages you already have.
+This lab targets **Fedora Workstation 44 x86_64** and uses Docker Engine as the container runtime for both Docker Compose and Kind. Follow these steps on a fresh Fedora workstation; skip packages you already have.
 
-> Read this file before running the lab. The main [README](../README.md) links back here and assumes the host prerequisites are installed.
+> Use this guide to prepare your host before following the setup sequence in the [main README](../README.md).
 
 ## 1. Hardware and operating-system requirements
 
@@ -102,7 +102,7 @@ kubectl argo rollouts version
 
 ## 8. Install Cosign on the Fedora host
 
-Cosign also exists inside the Jenkins build image, but the host binary is used once to generate the signing key pair.
+Cosign also exists inside the Jenkins build image, but the host binary is used to generate the signing key pair locally with `scripts/init-cosign-keys.sh`.
 
 ```bash
 curl -fsSLo /tmp/cosign \
@@ -126,7 +126,7 @@ The script checks Docker, Docker Compose, kubectl, Kind, Helm, Git, curl, Python
 ## 10. Network and cost expectations
 
 - The lab requires internet access during initial setup to download container images, Helm charts, release binaries, the GitHub source repository and the Trivy vulnerability database.
-- GitHub is the remote source-control service. Use a public repository for the simplest Argo CD setup. A free GitHub account is sufficient for this POC.
+- GitHub is the remote source-control service. Use a public fork for the simplest Argo CD setup. A free GitHub account is sufficient for this lab.
 - CI execution is local in Jenkins. No GitHub-hosted runner minutes are used.
 - Kubernetes, registry, monitoring and build services run locally. No AWS, cloud cluster, hosted registry, paid tunnel or paid SaaS is required.
 - The local registry uses plain HTTP and is bound to `127.0.0.1` on the Fedora host. Do not expose port 5000 to a LAN or the internet.

@@ -16,8 +16,8 @@ The goal is to collect reproducible evidence for the major delivery-platform con
 | T-10 | Failed canary | Run `scripts/demo-bad-rollout.sh` | Prometheus sees 503s; Argo Rollouts aborts canary; stable ReplicaSet stays active | AnalysisRun, Prometheus query and stable HTTP response |
 | T-11 | Recovery | Run `scripts/restore-healthy-release.sh` | Jenkins builds corrected image and Argo CD syncs a healthy digest | Jenkins run, GitOps commit and rollout status |
 
-## POC acceptance criteria
+## Lab completion criteria
 
-The lab is complete when T-01, T-03 through T-11 pass. T-02 is a controlled negative test and should be run with an intentionally vulnerable image on a separate test branch; do not intentionally weaken the main application base image just to force the gate to fail.
+The lab is validated when T-01, T-03 through T-11 pass. T-02 is a controlled negative test and should be run with an intentionally vulnerable image on a separate test branch; do not intentionally weaken the main application base image just to force the gate to fail.
 
 For portfolio evidence, capture the full Jenkins pipeline, a Trivy JSON report, CycloneDX SBOM, Cosign verification, Kyverno denial messages, Argo CD sync status, Argo Rollouts canary/abort state, Prometheus 503 query and the stable application's successful response during the abort.

@@ -3,6 +3,9 @@
 .env.*
 !.env.example
 security/cosign/cosign.key
+security/cosign/*.key
+security/cosign/*private*
+security/cosign/*secret*
 security/policies/verify-images.yaml
 *.pem
 *.key

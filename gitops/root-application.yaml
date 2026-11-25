@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/YOUR_GITHUB_USERNAME/secure-gitops-delivery-platform.git
+    repoURL: https://github.com/anouarharrou/secure-gitops-delivery-platform.git
     targetRevision: main
     path: gitops/overlays/local
   destination:

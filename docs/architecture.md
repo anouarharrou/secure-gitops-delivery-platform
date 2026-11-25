@@ -2,18 +2,18 @@
 
 ## System boundary
 
-GitHub is the remote source-control system. It is the only mandatory hosted service in this POC. Jenkins, BuildKit, the OCI registry, Kind, Argo CD, Kyverno, Argo Rollouts, Prometheus and Grafana run locally.
+This page describes how the lab components interact and where their trust boundaries sit. GitHub is the only mandatory hosted service; Jenkins, BuildKit, the OCI registry, Kind, Argo CD, Kyverno, Argo Rollouts, Prometheus and Grafana run locally.
 
-The Jenkins service polls GitHub every two minutes. No public webhook, reverse proxy, tunnel, hosted CI runner or cloud cluster is required. GitHub is used as SCM, not as the CI execution environment.
+Jenkins supports GitHub push webhooks and polls GitHub approximately every 15 minutes as a fallback. The webhook can start builds immediately when Jenkins is reachable from GitHub; the local loopback-only configuration cannot receive internet webhooks by default. Polling requires no public endpoint. GitHub is used as SCM, not as the CI execution environment.
 
 ## Delivery flow
 
 ```mermaid
 flowchart LR
   Dev[Developer] --> GH[GitHub repository]
-  GH -->|SCM polling| J[Jenkins on Fedora]
+  GH -->|Push webhook or SCM polling fallback| J[Jenkins on Fedora]
   J --> BK[Rootless BuildKit]
-  BK --> OCI[OCI archive]
+  BK --> OCI[OCI layout directory]
   OCI --> TV[Trivy scan]
   OCI --> SBOM[Syft SBOM]
   TV --> REG[Local OCI registry]
@@ -38,8 +38,9 @@ flowchart LR
 - Jenkins is allowed to write a single image digest to the GitOps overlay. It does not use `kubectl` and does not have a Kubernetes service-account token.
 - The BuildKit daemon is rootless and reachable only on the private Docker Compose network.
 - The OCI registry is HTTP because it is a private local lab service. It is bound to `127.0.0.1` on the host and is never published externally.
-- Cosign uses a locally generated key pair. The private key is stored as a Jenkins Secret File credential and is not committed.
+- Cosign uses a locally generated key pair. The private key is provisioned from the local ignored file into Jenkins as a Secret File credential; the Jenkins pipeline checks it matches the public key in the Git checkout before signing.
 - Kyverno verifies image signatures using only the public key. The local HTTP registry exception is enabled only for this lab.
+- The Registry Dashboard runs on the Compose network, proxies to the local registry and is exposed on loopback at port `8082` by default.
 - Argo CD reads desired state from GitHub and reconciles Kubernetes. It is the only component responsible for applying GitOps resources.
 
 ## Progressive-delivery behavior
