@@ -273,7 +273,7 @@ Configure both triggers in the Jenkins job UI. Trigger settings are deliberately
 
 2. In Jenkins, open the `secure-gitops-delivery` job and select **Configure → Build Triggers**.
 3. Check **GitHub hook trigger for GITScm polling**. This enables the job to respond to the GitHub plugin's webhook endpoint.
-4. Also check **Poll SCM** and enter `H/15 * * * *` in its schedule field. This is the fallback for missed/unavailable webhooks and polls every 15 minutes; it does not run a build when there are no source changes.
+4. Also check **Poll SCM** and enter `H/15 * * * *` in its schedule field. This is the fallback for missed/unavailable webhooks and polls every 15 minutes; it starts a build only after a source change. Leave **Build periodically** unchecked because it starts builds even when the repository has not changed.
 5. Save the job configuration. The Jenkinsfile does not configure or override these triggers. Jenkins' GitHub plugin receives push notifications at `<Jenkins base URL>/github-webhook/` (for example, `https://jenkins.example.com/github-webhook/`). In manual webhook mode, Jenkins does not create the GitHub webhook for you; configure that URL on the GitHub repository as described below. See the plugin's [GitHub documentation](https://plugins.jenkins.io/github/) for details.
 
 #### Register the webhook in GitHub
@@ -564,6 +564,7 @@ To remove all data, including Jenkins configuration and registry images, use `do
 | Jenkins cannot check out a private GitHub repository | The Pipeline job has no SCM read credential selected | Edit the job's SCM configuration and select `github-write-token` or another credential with repository read access |
 | Kind Pods show `ImagePullBackOff` | Registry not connected to the `kind` network or `hosts.toml` missing | Re-run `scripts/create-kind-cluster.sh`; inspect `/etc/containerd/certs.d/kind-registry:5000/hosts.toml` in each node |
 | Jenkins Git push is rejected | Token lacks Contents write, wrong repository, branch protection, or host branch is ahead | Verify `github-write-token`; check GitHub branch rules; retry after resolving non-fast-forward |
+| Jenkins keeps creating `chore(gitops): deploy` commits | **Build periodically** is enabled or unchanged revisions are being rebuilt | Use **Poll SCM** (`H/15 * * * *`) instead of **Build periodically**; confirm the console reports `buildRequired=false` for an unchanged commit or a GitOps-only commit |
 | Argo CD repository error | Wrong repo URL or repo is private | Check `gitops/root-application.yaml`; use public repo or configure Argo CD repo credentials |
 | Kyverno rejects a correctly signed image | Public key mismatch, digest mismatch, local registry HTTP not enabled, or signature push failed | Check `cosign.pub`, Jenkins logs, Kyverno logs and `--allowInsecureRegistry` argument |
 | Prometheus has no app metrics | ServiceMonitor not selected or app Pods not ready | `kubectl get servicemonitor -n delivery-demo -o yaml`; verify label `release: monitoring` |

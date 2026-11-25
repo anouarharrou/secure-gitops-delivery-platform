@@ -25,9 +25,12 @@ pipeline {
           env.FAIL_REQUESTS = fileExists('application/fault-injection.enabled') ? 'true' : 'false'
 
           def previous = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
-          if (!previous || previous == env.SOURCE_COMMIT ||
+          if (!previous ||
               sh(returnStatus: true, script: "git cat-file -e ${previous}^{commit}") != 0) {
             env.BUILD_REQUIRED = 'true'
+          } else if (previous == env.SOURCE_COMMIT) {
+            // A periodic trigger may run against the same revision; never rebuild it.
+            env.BUILD_REQUIRED = 'false'
           } else {
             def changed = sh(returnStdout: true,
               script: "git diff --name-only ${previous} ${env.SOURCE_COMMIT}").trim()
