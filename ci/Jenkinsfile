@@ -148,12 +148,17 @@ pipeline {
               printf '%s\n' "$IMAGE_DIGEST" > artifacts/image-digest.txt
               printf '%s@%s\n' "$IMAGE_REPOSITORY" "$IMAGE_DIGEST" > artifacts/image-ref.txt
 
-              cosign sign --key "$COSIGN_KEY_FILE" --tlog-upload=false --yes \\
+              cosign signing-config create \\
+                --no-default-fulcio --no-default-oidc --no-default-rekor --no-default-tsa \\
+                --out artifacts/cosign-signing-config.json
+
+              cosign sign --key "$COSIGN_KEY_FILE" \\
+                --signing-config artifacts/cosign-signing-config.json --yes \\
                 "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
 
               cosign attest --key "$COSIGN_KEY_FILE" --type cyclonedx \\
                 --predicate artifacts/sbom.cdx.json \\
-                --tlog-upload=false --yes \\
+                --signing-config artifacts/cosign-signing-config.json --yes \\
                 "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
             '''
             env.IMAGE_DIGEST = readFile('artifacts/image-digest.txt').trim()

@@ -36,6 +36,7 @@ This is intended to look and behave like a small internal software-delivery plat
 | SBOM generation | Syft | CycloneDX JSON artifact |
 | Image signing | Cosign key pair | Signature and signed SBOM attestation |
 | Artifact storage | Local OCI Registry | Published immutable image digest |
+| Registry visibility | Secure Delivery OCI Registry Dashboard | Images, tags and content digests in the local registry |
 | GitOps | Argo CD | Git-to-cluster reconciliation and sync status |
 | Admission security | Kyverno | Unsigned image and unrestricted Pod are rejected |
 | Progressive delivery | Argo Rollouts | Replica-based canary, metric analysis and abort |
@@ -47,7 +48,7 @@ This is intended to look and behave like a small internal software-delivery plat
 flowchart TD
   A[Developer commits application change] --> B[GitHub repository]
   B -->|Jenkins polls GitHub| C[Jenkins Pipeline on Fedora]
-  C --> D[Rootless BuildKit builds OCI archive]
+  C --> D[Rootless BuildKit exports OCI layout directory]
   D --> E[Trivy scans image]
   E --> F[Syft generates CycloneDX SBOM]
   F --> G[Skopeo pushes image to local registry]
@@ -77,6 +78,7 @@ The white-background image at the top is a visual overview. The Mermaid diagram 
 | Jenkins LTS | Local CI orchestrator; polls GitHub | `http://127.0.0.1:8080` |
 | BuildKit rootless | Builds OCI image without mounting the host Docker socket into Jenkins | Internal Compose network only |
 | OCI Registry | Stores built images and Cosign artifacts | `http://127.0.0.1:5000` |
+| Registry Dashboard | Read-only browser UI for the local registry | `http://127.0.0.1:8082` |
 
 ### Kubernetes platform — Kind
 
@@ -143,7 +145,7 @@ secure-gitops-delivery-platform/
 
 **Complete the detailed installation first:** [`docs/requirements.md`](docs/requirements.md).
 
-The required host tools are Docker Engine, Docker Compose, kubectl, Kind, Helm 3, Git, curl, Python 3, OpenSSL and jq. Install the Argo Rollouts kubectl plugin and Cosign on the Fedora host as described in the requirements guide.
+The required host tools are Docker Engine, Docker Compose, kubectl, Kind, Helm 3, Git, curl, Python 3, OpenSSL, jq and Cosign. Install the Argo Rollouts kubectl plugin as described in the requirements guide.
 
 The Jenkins image contains Trivy, Syft, Cosign, BuildKit client and Skopeo. You do not need to install those tools separately on Fedora.
 
@@ -179,10 +181,11 @@ From the repository root:
 ./scripts/start-local-services.sh
 ```
 
-This builds the custom Jenkins image and starts Jenkins, rootless BuildKit and the registry. Host ports are bound to loopback only:
+This builds the custom Jenkins image and starts Jenkins, rootless BuildKit, the registry and registry dashboard. Host ports are bound to loopback only:
 
 - Jenkins: `http://127.0.0.1:8080`
 - Registry API: `http://127.0.0.1:5000/v2/`
+- Registry Dashboard: `http://127.0.0.1:8082/`
 
 Retrieve the Jenkins unlock password if the helper did not print it:
 
@@ -193,27 +196,37 @@ docker compose exec jenkins \
 
 Open Jenkins, unlock it, and create the first administrator. The required plugins are already installed by `ci/Dockerfile`; you can skip installing additional suggested plugins for this POC.
 
-## 8. Generate the Cosign key pair
+### Secure Delivery OCI Registry Dashboard
 
-The private key must stay local and must never be committed. The `.gitignore` already excludes it.
+The dashboard is a browser UI for inspecting repositories, tags, tag history and content digests in the local OCI registry. Jenkins publishes the demo image and Cosign signature/attestation artifacts to that same registry; Kind pulls images from it over the Docker network. The UI provides visibility into stored artifacts and does not take part in image signing, verification or deployment.
+
+Compose defines it as `registry-ui`, attached to `secure-delivery-net`, with `NGINX_PROXY_PASS_URL=http://kind-registry:5000`. It is configured for one registry, with image deletion disabled, digest and tag-history display enabled, and a 1000-item catalog limit. The UI is unauthenticated, so Compose binds it to loopback only. The image is currently `joxit/docker-registry-ui:latest`.
+
+To start or stop only the dashboard:
 
 ```bash
-mkdir -p security/cosign
-cd security/cosign
-read -rsp "Choose a passphrase for the Cosign private key: " COSIGN_PASSWORD
-echo
-export COSIGN_PASSWORD
-cosign generate-key-pair
-unset COSIGN_PASSWORD
-cd ../..
+docker compose up -d registry-ui
+docker compose stop registry-ui
 ```
 
-Expected files:
+Open <http://127.0.0.1:8082>. Remove the stopped container with `docker compose rm -f registry-ui`. The `kind-registry` dependency is started automatically when needed. Override the dashboard's host port by setting `REGISTRY_UI_HTTP_PORT` in `.env` (copied from `.env.example` on the first full startup); it defaults to `8082` so it does not conflict with Argo CD's port-forward on `8081`. No dashboard-specific host tools or credentials are required. This repository has an architecture overview image but no dashboard screenshot.
 
-- `security/cosign/cosign.key` — encrypted private key; do not commit or share it.
-- `security/cosign/cosign.pub` — public key; safe to publish and used by Kyverno.
+## 8. Generate and initialize your local Cosign key pair
 
-Commit the public key so the repository contains the verification identity (the private key remains ignored):
+The project does not fetch keys from a separate repository. Each clone creates its own key pair locally; only the public key is committed so the Jenkins checkout and cluster use the same verification identity. The private key remains in your local working tree and is never committed.
+
+```bash
+./scripts/init-cosign-keys.sh
+```
+
+The script prompts for a non-empty passphrase and writes:
+
+- `security/cosign/cosign.key` — encrypted private key, mode `0600`, ignored by Git.
+- `security/cosign/cosign.pub` — public key, used by Kyverno and safe to commit.
+
+The initializer refuses to overwrite an existing key. To deliberately rotate the key, run `./scripts/init-cosign-keys.sh --rotate`; then update Jenkins credentials, commit the new public key, and reapply Kyverno's policy before building or admitting images. Images signed by the old key will no longer satisfy the updated policy, so publish and deploy a newly signed digest.
+
+Commit and push the public key before the Jenkins job builds:
 
 ```bash
 git add security/cosign/cosign.pub
@@ -223,13 +236,13 @@ git push origin main
 
 ### Add Jenkins credentials
 
-In Jenkins, open **Manage Jenkins → Credentials → System → Global credentials → Add Credentials** and create these credentials with the exact IDs:
+In Jenkins, open **Manage Jenkins → Credentials → System → Global credentials → Add Credentials** and create these credentials with the exact IDs. The Secret File is provisioned from the local `security/cosign/cosign.key`; Jenkins does not retrieve it from Git or an external key repository. Before signing, the pipeline derives its public key and compares it with the checked-out `security/cosign/cosign.pub`.
 
 | Credential ID | Kind | Value |
 |---|---|---|
 | `cosign-private-key` | Secret file | Upload `security/cosign/cosign.key` |
 | `cosign-password` | Secret text | The passphrase used to generate the key |
-| `github-write-token` | Secret text | Fine-grained GitHub PAT with `Contents: Read and write` on this repository only |
+| `github-write-token` | Username with password | Username `x-access-token`; password is a fine-grained GitHub PAT with `Contents: Read and write` on this repository only |
 
 Create the fine-grained token in GitHub Settings → Developer settings → Personal access tokens. Grant only access to this one repository and the **Contents: Read and write** permission. Do not paste the token in the Jenkinsfile or commit it to Git.
 
@@ -243,7 +256,7 @@ In Jenkins:
 2. Under **Pipeline**, choose **Pipeline script from SCM**.
 3. SCM: **Git**.
 4. Repository URL: `https://github.com/YOUR_GITHUB_USERNAME/secure-gitops-delivery-platform.git`.
-5. Credentials: none for a public repository. Add read credentials if you use a private repository.
+5. Credentials: none for a public repository. For a private repository, select `github-write-token` (Username with password; PAT in the password field) or another credential with repository read access.
 6. Branch specifier: `*/main`.
 7. Script path: `ci/Jenkinsfile`.
 8. Save and click **Build Now** for the first run.
@@ -253,13 +266,17 @@ The Jenkinsfile enables `pollSCM('H/2 * * * *')`, so Jenkins polls GitHub approx
 ### What the first build does
 
 1. Detects that the application needs a build.
-2. Builds an OCI archive using the rootless BuildKit daemon.
+2. Builds an OCI image layout directory using the rootless BuildKit daemon.
 3. Scans the image with Trivy. Any **CRITICAL** finding fails the pipeline; lower severities remain in the JSON report for review.
 4. Generates a CycloneDX SBOM with Syft.
 5. Pushes the image to the local registry using Skopeo.
 6. Signs the image digest and attests the SBOM with Cosign.
 7. Commits the immutable image digest to `gitops/overlays/local/kustomization.yaml` in GitHub.
-8. Archives the SBOM, Trivy report and image digest in the Jenkins build.
+8. Archives the Trivy report, CycloneDX SBOM, BuildKit metadata, and built and pushed image digests in the Jenkins build.
+
+BuildKit exports `artifacts/delivery-demo.oci` with `type=oci,tar=false`; it is a directory containing `index.json`, `oci-layout` and content-addressed blobs, not an OCI tarball. Trivy scans that directory with `--input`, Syft reads it as `oci-dir:`, and Skopeo reads it as `oci:`. BuildKit's `containerimage.digest` is recorded from `build-metadata.json`; after Skopeo pushes the image, Jenkins compares the registry digest with that value and refuses to sign if they differ. The signing stage generates a Cosign signing configuration with the transparency-log services removed, as required by Cosign 3.1.4 for this local lab. The full OCI layout stays in the workspace only and is removed by `cleanWs`; reports and digest metadata remain downloadable from the Jenkins build's **Artifacts** section.
+
+To inspect archived outputs, open the completed Jenkins build and select **Artifacts**. `trivy-report.json` contains the full scan report, `sbom.cdx.json` is the CycloneDX inventory, and `build-metadata.json`, `build-image-digest.txt`, `image-digest.txt` and `image-ref.txt` record the build and publication identity. Jenkins console output remains available for stage-level diagnostics.
 
 The first successful run must finish before you install the Argo CD root Application. The Kustomize file starts with a deliberately invalid placeholder digest so that an unbuilt image cannot accidentally be deployed.
 
@@ -486,6 +503,7 @@ docker compose ps
 docker compose logs -f jenkins
 docker compose logs -f buildkitd
 docker compose logs -f kind-registry
+docker compose logs -f registry-ui
 
 # Kubernetes context and workloads
 kubectl config get-contexts
@@ -513,6 +531,13 @@ To remove all data, including Jenkins configuration and registry images, use `do
 |---|---|---|
 | Jenkins cannot reach BuildKit | BuildKit container is still starting or Compose network issue | `docker compose logs buildkitd`; restart `docker compose up -d buildkitd` |
 | Skopeo cannot push | Registry is not running or Jenkins cannot resolve it | `docker compose ps`; `docker compose exec jenkins getent hosts kind-registry` |
+| Trivy reports missing `manifest.json` or says `index.json` is not a directory | BuildKit output is an OCI tarball, which Trivy does not accept as `--input` | Confirm the pipeline uses `type=oci,...,tar=false` and that `artifacts/delivery-demo.oci/index.json` exists |
+| Registry dashboard does not open | Dashboard is stopped or its host port is occupied | `docker compose ps registry-ui`; check `REGISTRY_UI_HTTP_PORT` in `.env`, then `docker compose up -d registry-ui` |
+| Registry dashboard shows no repositories | Registry is empty or Jenkins has not pushed an image yet | Check `docker compose logs registry-ui kind-registry`, then confirm a successful Jenkins push and reload the dashboard |
+| Cosign initializer refuses to run | A key or public key already exists | Back up the current key pair before intentional rotation; then use `./scripts/init-cosign-keys.sh --rotate` only when replacing the signing identity |
+| Jenkins reports a Cosign key mismatch | Jenkins Secret File differs from the checked-out public key | Re-provision `cosign-private-key` and `cosign-password` from the same local pair in `security/cosign/`, and ensure the matching public key is committed |
+| Jenkins reports a missing credential ID | The global credential has not been created or its ID differs | Add the required credentials exactly as `cosign-private-key`, `cosign-password`, and `github-write-token` under **Manage Jenkins → Credentials** |
+| Jenkins cannot check out a private GitHub repository | The Pipeline job has no SCM read credential selected | Edit the job's SCM configuration and select `github-write-token` or another credential with repository read access |
 | Kind Pods show `ImagePullBackOff` | Registry not connected to the `kind` network or `hosts.toml` missing | Re-run `scripts/create-kind-cluster.sh`; inspect `/etc/containerd/certs.d/kind-registry:5000/hosts.toml` in each node |
 | Jenkins Git push is rejected | Token lacks Contents write, wrong repository, branch protection, or host branch is ahead | Verify `github-write-token`; check GitHub branch rules; retry after resolving non-fast-forward |
 | Argo CD repository error | Wrong repo URL or repo is private | Check `gitops/root-application.yaml`; use public repo or configure Argo CD repo credentials |
@@ -541,7 +566,8 @@ This is a local engineering POC, not a production-ready reference deployment.
 - [ ] Fedora host prerequisites installed and validated.
 - [ ] Empty GitHub repository created and initial code pushed.
 - [ ] Jenkins, BuildKit and local registry running in Docker Compose.
-- [ ] Cosign private key stored only in Jenkins Credentials and ignored by Git.
+- [ ] Locally generated Cosign private key stays gitignored and is provisioned to Jenkins Credentials; matching public key is committed.
+- [ ] Registry dashboard is available on its configured loopback port.
 - [ ] Jenkins Pipeline builds, scans, generates SBOM, signs and pushes image.
 - [ ] Jenkins writes the immutable digest to the GitOps overlay.
 - [ ] Kind cluster and local-registry network integration are healthy.
