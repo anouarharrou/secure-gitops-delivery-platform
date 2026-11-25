@@ -19,7 +19,6 @@ pipeline {
     IMAGE_REPOSITORY = 'kind-registry:5000/delivery-demo'
     TARGET_BRANCH = 'main'
     TRIVY_CACHE_DIR = '/var/jenkins_home/.cache/trivy'
-    COSIGN_INSECURE_REGISTRY = 'true'
   }
 
   stages {
@@ -152,11 +151,11 @@ pipeline {
                 --no-default-fulcio --no-default-oidc --no-default-rekor --no-default-tsa \\
                 --out artifacts/cosign-signing-config.json
 
-              cosign sign --key "$COSIGN_KEY_FILE" \\
+              cosign sign --allow-http-registry --key "$COSIGN_KEY_FILE" \\
                 --signing-config artifacts/cosign-signing-config.json --yes \\
                 "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
 
-              cosign attest --key "$COSIGN_KEY_FILE" --type cyclonedx \\
+              cosign attest --allow-http-registry --key "$COSIGN_KEY_FILE" --type cyclonedx \\
                 --predicate artifacts/sbom.cdx.json \\
                 --signing-config artifacts/cosign-signing-config.json --yes \\
                 "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"

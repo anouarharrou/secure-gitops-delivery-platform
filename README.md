@@ -483,14 +483,12 @@ IMAGE_DIGEST="sha256:<digest-from-the-build>"
 IMAGE_REF="kind-registry:5000/delivery-demo@${IMAGE_DIGEST}"
 ```
 
-The local registry is HTTP, so set the Cosign lab flag for these commands:
+The local registry is HTTP, so pass Cosign's explicit lab-only HTTP option:
 
 ```bash
-export COSIGN_INSECURE_REGISTRY=true
-cosign verify --key security/cosign/cosign.pub "$IMAGE_REF"
-cosign verify-attestation --key security/cosign/cosign.pub \
+cosign verify --allow-http-registry --key security/cosign/cosign.pub "$IMAGE_REF"
+cosign verify-attestation --allow-http-registry --key security/cosign/cosign.pub \
   --type cyclonedx "$IMAGE_REF"
-unset COSIGN_INSECURE_REGISTRY
 ```
 
 The signature proves which key signed the image digest. The signed CycloneDX attestation binds the generated SBOM to that digest. Kyverno's admission rule in this POC enforces the image signature; the attestation is generated and can be verified manually.
