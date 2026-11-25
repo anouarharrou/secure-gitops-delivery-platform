@@ -62,8 +62,23 @@ pipeline {
             --local dockerfile=application \\
             --opt build-arg:FAIL_REQUESTS="$FAIL_REQUESTS" \\
             --opt build-arg:APP_VERSION="$SOURCE_COMMIT_SHORT" \\
-            --output type=oci,dest=artifacts/delivery-demo.oci.tar
-          test -s artifacts/delivery-demo.oci.tar
+            --output type=oci,dest=artifacts/delivery-demo.oci,tar=false \\
+            --metadata-file artifacts/build-metadata.json
+
+          test -s artifacts/delivery-demo.oci/index.json || {
+            echo "BuildKit did not export an OCI layout index at artifacts/delivery-demo.oci/index.json." >&2
+            exit 1
+          }
+          test -d artifacts/delivery-demo.oci/blobs/sha256 || {
+            echo "BuildKit OCI layout is missing its content-addressed blobs." >&2
+            exit 1
+          }
+          BUILD_DIGEST="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' artifacts/build-metadata.json)"
+          [[ "$BUILD_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+            echo "BuildKit did not report a valid image manifest digest." >&2
+            exit 1
+          }
+          printf '%s\n' "$BUILD_DIGEST" > artifacts/build-image-digest.txt
         '''
       }
     }
@@ -74,17 +89,28 @@ pipeline {
         sh '''#!/usr/bin/env bash
           set -euo pipefail
           mkdir -p artifacts
-          trivy image --input artifacts/delivery-demo.oci.tar \\
+          trivy image --input artifacts/delivery-demo.oci \\
             --format json --output artifacts/trivy-report.json \\
             --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --exit-code 0
+          test -s artifacts/trivy-report.json || {
+            echo "Trivy did not produce artifacts/trivy-report.json." >&2
+            exit 1
+          }
 
           echo "Blocking gate: any CRITICAL finding fails this pipeline."
-          trivy image --input artifacts/delivery-demo.oci.tar \\
-            --severity CRITICAL --exit-code 1
+          if trivy image --input artifacts/delivery-demo.oci \\
+              --severity CRITICAL --exit-code 1; then
+            echo "Trivy CRITICAL vulnerability gate passed."
+          else
+            result=$?
+            echo "Trivy found one or more CRITICAL vulnerabilities; image publication is blocked." >&2
+            exit "$result"
+          fi
 
-          syft oci-archive:artifacts/delivery-demo.oci.tar \\
+          syft oci-dir:artifacts/delivery-demo.oci \\
             -o cyclonedx-json=artifacts/sbom.cdx.json
           test -s artifacts/sbom.cdx.json
+          python3 -c 'import json; json.load(open("artifacts/sbom.cdx.json"))'
         '''
       }
     }
@@ -101,13 +127,26 @@ pipeline {
             env.IMAGE_REF = "${env.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
             sh '''#!/usr/bin/env bash
               set -euo pipefail
-              skopeo copy --dest-tls-verify=false \\
-                oci-archive:artifacts/delivery-demo.oci.tar \\
+              cosign public-key --key "$COSIGN_KEY_FILE" > artifacts/jenkins-cosign.pub
+              if ! cmp -s artifacts/jenkins-cosign.pub security/cosign/cosign.pub; then
+                echo "Jenkins Cosign private key does not match security/cosign/cosign.pub." >&2
+                echo "Update the Jenkins Secret File credential and Kyverno public key together." >&2
+                exit 1
+              fi
+
+              skopeo copy --preserve-digests --dest-tls-verify=false \\
+                oci:artifacts/delivery-demo.oci \\
                 "docker://${IMAGE_REF}"
 
               IMAGE_DIGEST="$(skopeo inspect --tls-verify=false --format '{{.Digest}}' "docker://${IMAGE_REF}")"
               [[ "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+              BUILD_DIGEST="$(cat artifacts/build-image-digest.txt)"
+              if [[ "$IMAGE_DIGEST" != "$BUILD_DIGEST" ]]; then
+                echo "Registry digest $IMAGE_DIGEST does not match BuildKit digest $BUILD_DIGEST; refusing to sign a different image." >&2
+                exit 1
+              fi
               printf '%s\n' "$IMAGE_DIGEST" > artifacts/image-digest.txt
+              printf '%s@%s\n' "$IMAGE_REPOSITORY" "$IMAGE_DIGEST" > artifacts/image-ref.txt
 
               cosign sign --key "$COSIGN_KEY_FILE" --tlog-upload=false --yes \\
                 "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
@@ -127,7 +166,11 @@ pipeline {
     stage('Update GitOps desired state') {
       when { expression { env.BUILD_REQUIRED == 'true' } }
       steps {
-        withCredentials([string(credentialsId: 'github-write-token', variable: 'GITHUB_TOKEN')]) {
+        withCredentials([usernamePassword(
+          credentialsId: 'github-write-token',
+          usernameVariable: 'GITHUB_USERNAME',
+          passwordVariable: 'GITHUB_TOKEN'
+        )]) {
           sh '''#!/usr/bin/env bash
             set -euo pipefail
             python3 scripts/update-image-digest.py "$IMAGE_DIGEST"
@@ -170,7 +213,7 @@ ASKPASS_EOF
 
   post {
     always {
-      archiveArtifacts artifacts: 'artifacts/trivy-report.json,artifacts/sbom.cdx.json,artifacts/image-digest.txt', allowEmptyArchive: true, fingerprint: true
+      archiveArtifacts artifacts: 'artifacts/trivy-report.json,artifacts/sbom.cdx.json,artifacts/build-metadata.json,artifacts/build-image-digest.txt,artifacts/image-digest.txt,artifacts/image-ref.txt', allowEmptyArchive: true, fingerprint: true
       cleanWs deleteDirs: true, notFailBuild: true
     }
   }
