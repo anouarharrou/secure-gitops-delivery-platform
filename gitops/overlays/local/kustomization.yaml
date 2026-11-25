@@ -10,4 +10,4 @@ resources:
 images:
   - name: demo-app
     newName: kind-registry:5000/delivery-demo
-    digest: sha256:209965e09aded1d2b63820a1286c4e7de5a77a57fd25448a7d96ae1c9f6bfb50
+    digest: sha256:c22d909cf02fe803dfd55d37c2350a99800353c4527728c4bef3eb8d54bfa6f1
